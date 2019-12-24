@@ -21,6 +21,7 @@
 import logging
 import errno
 import sys
+import socket
 sys.path.append('..')
 from cnp import eventloop
 
@@ -224,13 +225,6 @@ class TCPRelay(object):
             logging.warn('unknown socket')
 
     def destroy(self):
-        # destroy the handler and release any resources
-        # promises:
-        # 1. destroy won't make another destroy() call inside
-        # 2. destroy releases resources so it prevents future call to destroy
-        # 3. destroy won't raise any exceptions
-        # if any of the promises are broken, it indicates a bug has been
-        # introduced! mostly likely memory leaks, etc
         if self._is_destroted:
             # this couldn't happen
             logging.debug('already destroyed')
@@ -246,6 +240,67 @@ class TCPRelay(object):
             self._loop.remove(self._local_sock)
             self._local_sock.close()
             self._local_sock = None
+
+class TCPListen :
+    def __init__(self,server, port,loop):
+        self._server = server
+        self._listen_port = port
+        self._listen_sock = None
+        self._loop = loop
+        self._is_destroted = False
+
+    def listen(self):
+        s = socket.socket()
+        host = socket.gethostname()
+        s.bind((host,self._listen_port))
+        s.listen(5)
+        self._listen_sock = s
+        self._loop.add(s , eventloop.POLL_IN | eventloop.POLL_ERR, self)
+
+    def handle_event(self, sock, fd, event):
+        if event & eventloop.POLL_ERR:
+            # listen err 
+            logging.debug("listen port err ")
+            self.destroy()
+            
+        try:
+            logging.debug('accept')
+            remote = self._listen_sock.accept()
+            # TODO 
+            local = None 
+            TCPRelay(local ,remote,self._loop)
+
+        except (OSError, IOError) as e:
+            error_no = eventloop.errno_from_exception(e)
+            if error_no in (errno.EAGAIN, errno.EINPROGRESS, errno.EWOULDBLOCK):
+                return
+            else:
+                logging.error(e)
+
+    def destroy(self):
+        # destroy the handler and release any resources
+        # promises:
+        # 1. destroy won't make another destroy() call inside
+        # 2. destroy releases resources so it prevents future call to destroy
+        # 3. destroy won't raise any exceptions
+        # if any of the promises are broken, it indicates a bug has been
+        # introduced! mostly likely memory leaks, etc
+        if self._is_destroted:
+            # this couldn't happen
+            logging.debug('already destroyed')
+            return
+        self._is_destroted = True
+        if self._listen_port:
+            logging.debug('destroying listen socket ')
+            self._loop.remove(self._listen_sock)
+            self._listen_sock.close()
+            self._listen_sock = None
+        self._server.destroy()
+
+
+        
+
+
 
 
 
