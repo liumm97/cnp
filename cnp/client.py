@@ -1,11 +1,12 @@
 import socket
 import logging
-import struct
 import sys
 import select
-import  common
+import time
+import protocol
+import stream
 
-def Client():
+class  Client():
     mar_version = 0
     min_version = 1
     def __init__(self,config) :
@@ -14,144 +15,145 @@ def Client():
         self.passwd = self.config["passwd"]
         self.server_ip  = config['server_ip']
         self.server_port = config['server_port']
+        self.server_buf = []
         self.tcp_ports = self.config["tcp_ports"]
         self.udp_ports = self.config["udp_ports"]
-        self.socket = None
-        self.socket_buf = b''
-        self.stream = {}   # stream_id -> socket
-        self.inputs = []
-        self.outputs = []
-        self.message_queues = {}
+        self.stream_manager = None
+    
+    def init(self) :
+        logging.info(" Connect Server ... ")
+        # 与服务端建立连接 ，并且发送认认证和端口注册信息
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.connect((self.server_ip,self.server_port))
+        self.server_socket = server_socket
+        self.stream_manager = stream.StreamManager(server_socket)
 
-    # 与服务端建立连接
-    def __connect(self) :
-        # 建立连接
-        s = socket.socket()
-        s.connect((self.server_ip, self.server_port))
-        self.socket = s
+        # 认证信息
+        auth_body = protocol.auth_data(Client.mar_version,Client.min_version,self.uname,self.passwd)
+        auth_data = protocol.add_frame_head(protocol.FRAME_AUTH,auth_body)
+        self.stream_manager.put_socket_data(self,auth_data)
+
+        # 端口信息
+        register_body  = protocol.register_data(self.tcp_ports,self.udp_ports)
+        register_data = protocol.add_frame_head(protocol.FRAME_REGISTER,register_body)
+        server_socket.send(auth_data + register_data)
+        self.stream_manager.put_socket_data(self,register_data)
         return 
 
-    # auth_frame
-    def __auth_pkg(self):
-       # 构造auth pkg
-       udata , pdata = self.uname.encode('utf8'),self.passwd.encode('utf8')
-       cdata = struct.pack('2B',mar_version,min_version) 
-       auth_data = struct.pack('B' + len(udata) + 'sB' + len(pdata) +'s',len(udata),udata,len(pdata),pdata )
-       data =  common.add_head(0x1,cdata+auth_data)
-       return data
-
-       # register_frame
-    def __register_pkg(self):
-        cdata = struct.pack('2B',len(self.tcp_ports),len(self.udp_ports))
-        pdata = bytes()
-        for  port in self.tcp_ports +self.udp_ports:
-           pdata += struct.pack('2H',port[0],port[1])
-        data = common.add_head(0x2,cdata + pdata)
-        return data
-
-    def __parse_terminate(self,data):
-        err_map = {
-                0x10 : "版本号不兼容",
-                0x11 : "用户不存在",
-                0x12 : "密码错误",
-                0x20 : "端口不被允许",
-                0x21 : "端口已占用"
-                }
-        maver,minver ,err_code = struct.pack('2BH',data)
-        logging.error(" 客户端被终止")
-        logging.error("服务器版本:{}.{} 终止原因:{}".format(maver,minver,err_map.get(err_code,"未知错误")))
-        sys.exit(0)
-        return 
-
-    # OPEN_STREAM 帧 (0x3)
-    def open_stream(self,data) :
-        ty,port,stream_id = struct.unpack("BHL",data)
-        # 流是否存在
-        if stream_id in self.stream :
-            # rest stream 
-            body = struct.pack('B',0x2)
-            hdata = common.add_head(0x4,body,stream_id)
-            self.message_queues[self.socket].put(hdata)
+    # 新建一个流
+    def open_stream(self,ty,port,stream_id):
+        # 判断流是否存在
+        stream_manager = self.stream_manager
+        if self.stream_manager.is_in_stream(stream_id) :
+            stream_manager.reset_stream(stream_id,0x2)
             return 
-        # 创建流
-        rsocket = None 
+        # 打开socket  
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
         try :
-            if ty == 0x1 :
-                rsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            if ty == 0x2 :
-                rsocket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            rsocket.connect(('127.0.0.1', port))
-            self.stream[stream_id] = rsocket
+            host = socket.gethostname()
+            s.connect((host, port))
         except :
-              body = struct.pack('B',0x1)
-              hdata = common.add_head(0x4,body,stream_id)
+            logging.error(" connect tcp port({}) error ".format(port))
+            stream_manager.reset_stream(stream_id,0x1)
+            return 
+        stream_manager.blind_stream(stream_id,s)
         return 
 
-    def __handle_socker_receive(self,data) :
-        data = self.socket_buf + data
+
+
+
+    def handle_server_receive(self,data) :
+        data = self.server_buf + data
         while True :
-            if len(data) < 2 : break
-            len_pkg = common.len_pack(data)
-            if len(data) < len_pkg : continue
-            _,ty,_,stream_id,body = common.rm_head(data[:len_pkg])
-            if ty == 0x2 : # 终止帧 
-                self.__parse_terminate(body)
-            elif ty == 0x3 : # 新建流
-                self.open_stream(body)
-            elif ty == 0x4 : # 关闭流
-                del self.stream[stream_id]
-            elif ty == 0x5 : # 转发数据
-                rsocket = self.stream[stream_id]
-                if not rsocket : pass
-                self.message_queues[rsocket].put(body)
-            else : pass
-            data = data[:len_pkg]
-    def __handler_receive(self,readable) :
+            if  not protocol.can_parse(data) :
+                self.server_buf = data
+                break
+            len_pkg = protocol.len_pkg(data)
+            pkg = data[:len_pkg] 
+            if  not protocol.valid_frame(pkg) :
+                logging.warn(" receive invalid pkg ")
+                data = data[len_pkg:]
+                continue
+            ty = protocol.view_frame_type(pkg)
+            stream_id = protocol.view_stream_id(pkg)
+            body = protocol.get_frame_data(pkg)
+            if ty == protocol.FRAME_TERMINATE : # 终止帧 
+                maver,miver,_,errmsg = protocol.parse_terminate_data(body)
+                logging.info(" Server Version  {}.{} ".format(maver,miver))
+                logging.info(" Connection Failed,{}".format(errmsg))
+                sys.exit(0)
+                return 
+            elif ty == protocol.FRAME_OPEN_STREAM: # 新建流
+                ty,port ,stream_id  =  protocol.parse_open_stream_data(body)
+                self.open_stream(ty,port,stream_id)
+            elif ty == protocol.FRAME_RST_STREAM : # 关闭流
+                code = protocol.parse_reset_data(body)
+                self.stream_manager.hand_reset_stream(stream_id,code)
+            elif ty == protocol.FRAME_DATA : # 转发数据
+                rsocket = self.stream_manager.get_socket(stream_id)
+                if rsocket :
+                    self.stream_manager.put_socket_data(rsocket,body)
+            data = data[len_pkg:]
+
+    def handler_receive(self,readable) :
         for s in readable :
-            if s == self.socket :
-                data = self.socket_buf + s.recv(1024)
-                self.__handle_socker_receive(data)
-            else :
-                 data = s.recv(1024)
-                 if data != b'' :
-                     for s
+            data = s.recv(1024)
+            logging.debug(" receive data {}".format(data))
+            if s == self.server_socket :
+                if data ==b'':
+                    logging.info("Server Connectin Close")
+                    sys.exit(0)
+                    return 
+                self.handle_server_receive(data)
+                continue
+            stream_id = self.stream_manager.get_stream_id(socket)
+            if  not stream_id : continue
+            if data == b'' :
+                self.stream_manager.reset_stream(stream_id,0x0)
+        return 
 
-                     pass
-                 
-
-
-
+    def handler_send(self ,writable) :
+        for s in writable:
+            self.stream_manager.hand_send_data(s)
         return 
 
 
-    def start(self) :
-        # 构造初始化帧
-        self.__control_queue.append(self.__auth_pkg(),self.__register_pkg())
-        self.__connect()
+    def handler_exception(self,exceptional):
+        for s in exceptional :
+            if s  ==  self.server_socket :
+                logging.error(' Server Connection Exception ')
+                sys.exit(0)
+                return 
+            logging.debug('exception condition on' +  s.getpeername())
+            if not self.stream_manager.is_active_socket(s) :
+                self.stream_manager.hand_unactive_socket(socket)
+                continue
+            stream_id = self.stream_manager.get_stream_id(s)
+            self.stream_manager.reset_stream(stream_id,0x3)
+            return 
+
+    def run(self) :
+        self.init()
         while True  :
-            readable, writable, exceptional = select.select(self.inputs,self.outputs,self.inputs)
+            readable, writable, exceptional = select.select(self.stream_manager.get_select_sockets())
+            if readable :
+                self.handler_receive(readable)
+            if writable  :
+                self.handler_send(writable)
+            if exceptional  :
+                print(exceptional)
+                self.handler_exception(exceptional)
 
-        
+if __name__== '__main__' :
+    logging.basicConfig(level=logging.DEBUG)
+    config = {
+            "uname":"root",
+            "passwd":"123456",
+            "server_ip":"127.0.0.1",
+            "server_port":8080,
+            "tcp_ports" :[(22,1022),(33,1033)],
+            "udp_ports" : [(22,1022),(33,1033)]
+            }
+    cli = Client(config)
+    cli.run()
 
-
-        
-
-
-
-        
-
-
-
-
-
-
-
-
-
-       
-
-
-
-
-
-       
