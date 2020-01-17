@@ -4,8 +4,8 @@ import protocol
 class StreamManager:
     def __init__(self,server_socket):
         self.server_socket = server_socket
-        self.inputs = []
-        self.outputs = []
+        self.inputs = [server_socket]
+        self.outputs = [server_socket]
         self.stream_to_socket = {}
         self.message_queue = {}
         self.stream_base_id = 0
@@ -17,16 +17,16 @@ class StreamManager:
         return self.stream_base_id
 
     def is_active_socket(self,socket) :
-        for _,v in self.stream_to_socket:
-            if v  == socket : return True
+        if socket in self.stream_to_socket.values():
+            return  True
         return False 
 
     def get_socket(self,stream_id) :
         return self.stream_to_socket[stream_id]
 
     def get_stream_id(self,socket):
-        for k,v in self.stream_to_socket:
-            if v  == socket : return k
+        for k,v in self.stream_to_socket.items():
+            if v  ==   socket : return k
         return  
 
 
@@ -37,18 +37,16 @@ class StreamManager:
         logging.debug(" open stream id:{} port_type:{} remote_port:{}".format(stream_id,ty,rport))
         body = protocol.open_stream_data(ty,rport,stream_id)
         open_message = protocol.add_frame_head(protocol.FRAME_OPEN_STREAM,body)
+        self.stream_to_socket[stream_id] = socket
+        self.message_queue[socket] =queue.Queue()
         self.message_queue[self.server_socket].put(open_message)
         if self.server_socket not in self.outputs :
             self.outputs.append(self.server_socket)
-        self.stream_to_socket[stream_id] = socket
         self.inputs.append(socket)
         return stream_id
 
     # 关闭一个流
     def reset_stream(self,stream_id,code) :
-        if stream_id not in self.stream_to_socket :
-            logging.warn(" reset stream  stream_id error  ")
-            return 
         logging.debug(" clost stream id:{} code:{}".format(stream_id,code))
         body = protocol.reset_stream_data(code)
         reset_msg = protocol.add_frame_head(protocol.FRAME_RST_STREAM,body,stream_id)
@@ -56,6 +54,7 @@ class StreamManager:
         if self.server_socket not in self.outputs :
             self.outputs.append(self.server_socket)
         socket = self.stream_to_socket[stream_id]
+        if not socket : return 
         self.inputs.remove(socket)
         if socket in self.outputs :
             self.outputs.remove(socket)
@@ -105,6 +104,8 @@ class StreamManager:
         return 
 
     def hand_send_data(self,socket) :
+        logging.debug(" begin send data")
+        logging.debug(socket)
         try:
             # 如果消息队列中有消息,从消息队列中获取要发送的消息
             message_queue = self.message_queue[socket]
@@ -112,6 +113,7 @@ class StreamManager:
             if message_queue is not None:
                 send_data = message_queue.get_nowait()
         except queue.Empty:
+            logging.debug("send queue empty")
             self.outputs.remove(socket)
             if socket != self.server_socket and  not self.is_active_socket(socket) :
                 self.inputs.remove(socket)
@@ -126,5 +128,15 @@ class StreamManager:
         return self.inputs,self.outputs,self.inputs
 
     def put_socket_data(self,socket,data) :
+        logging.debug(" to put socket = {}".format(socket))
+        logging.debug( " to put data = {}".format(data))
         self.message_queue[socket].put(data)
+        if socket not in self.outputs:
+            self.outputs.append(socket)
         return 
+
+    def destroy(self):
+        for s in self.inputs:
+            s.close()
+        return 
+

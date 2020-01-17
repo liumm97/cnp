@@ -15,7 +15,7 @@ class  Client():
         self.passwd = self.config["passwd"]
         self.server_ip  = config['server_ip']
         self.server_port = config['server_port']
-        self.server_buf = []
+        self.server_buf = b''
         self.tcp_ports = self.config["tcp_ports"]
         self.udp_ports = self.config["udp_ports"]
         self.stream_manager = None
@@ -31,13 +31,12 @@ class  Client():
         # 认证信息
         auth_body = protocol.auth_data(Client.mar_version,Client.min_version,self.uname,self.passwd)
         auth_data = protocol.add_frame_head(protocol.FRAME_AUTH,auth_body)
-        self.stream_manager.put_socket_data(self,auth_data)
+        self.stream_manager.put_socket_data(self.server_socket,auth_data)
 
         # 端口信息
         register_body  = protocol.register_data(self.tcp_ports,self.udp_ports)
         register_data = protocol.add_frame_head(protocol.FRAME_REGISTER,register_body)
-        server_socket.send(auth_data + register_data)
-        self.stream_manager.put_socket_data(self,register_data)
+        self.stream_manager.put_socket_data(self.server_socket,register_data)
         return 
 
     # 新建一个流
@@ -50,8 +49,7 @@ class  Client():
         # 打开socket  
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
         try :
-            host = socket.gethostname()
-            s.connect((host, port))
+            s.connect(('127.0.0.1', port))
         except :
             logging.error(" connect tcp port({}) error ".format(port))
             stream_manager.reset_stream(stream_id,0x1)
@@ -106,10 +104,15 @@ class  Client():
                     return 
                 self.handle_server_receive(data)
                 continue
-            stream_id = self.stream_manager.get_stream_id(socket)
+            stream_id = self.stream_manager.get_stream_id(s)
             if  not stream_id : continue
             if data == b'' :
+                logging.debug(" receive empty data")
                 self.stream_manager.reset_stream(stream_id,0x0)
+                continue
+            pkg = protocol.add_frame_head(protocol.FRAME_DATA,data,stream_id)
+            self.stream_manager.put_socket_data(self.server_socket,pkg)
+
         return 
 
     def handler_send(self ,writable) :
@@ -135,7 +138,8 @@ class  Client():
     def run(self) :
         self.init()
         while True  :
-            readable, writable, exceptional = select.select(self.stream_manager.get_select_sockets())
+            inputs , outputs , excepts = self.stream_manager.get_select_sockets()
+            readable, writable, exceptional = select.select(inputs,outputs,excepts)
             if readable :
                 self.handler_receive(readable)
             if writable  :
@@ -151,8 +155,8 @@ if __name__== '__main__' :
             "passwd":"123456",
             "server_ip":"127.0.0.1",
             "server_port":8080,
-            "tcp_ports" :[(22,1022),(33,1033)],
-            "udp_ports" : [(22,1022),(33,1033)]
+            "tcp_ports" :[(10022,11122)],
+            "udp_ports" :[],
             }
     cli = Client(config)
     cli.run()
