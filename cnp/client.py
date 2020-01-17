@@ -95,6 +95,7 @@ class  Client():
 
     def handler_receive(self,readable) :
         for s in readable :
+            if s.fileno() == -1 : continue
             data = s.recv(1024)
             logging.debug(" receive data {}".format(data))
             if s == self.server_socket :

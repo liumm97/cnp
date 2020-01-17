@@ -1,26 +1,33 @@
-import struct 
+# 双向map
+class DoubleMap():
+    def __init__(self):
+        self.kmap={} # k-v
+        self.vmap={} # v-k
+        return 
 
-def add_head(ty,data,stream_id = 0,flag = 0):
-    hdata = struct.pack('>H2BL',len(data),ty,flag,stream_id)
-    return hdata + data
+    def put(self,k,v) :
+        self.kmap[k] =v 
+        self.vmap[v] = k
 
-def rm_head(data) :
-    ln , ty , flag ,stream_id = struct.unpack('>H2BL', data[:8])
-    data = data[8:8+ln]
-    return ln , ty , flag ,stream_id ,data
+    def get_k(self,k) :
+        return self.kmap[k]
 
-def len_pack(data) :
-    (ln,) = struct.unpack('>H',data[:2])
-    return ln + 8 
+    def get_v(self,v):
+        return self.vmap[v]
 
+    def is_in_k(self,k):
+        return k in self.kmap
 
-if __name__== '__main__' :
-    data = 'hello world'.encode('utf8')
-    ty,stream_id ,data,flag = len(data),1024,data,8
-    hdata = add_head(ty,data,stream_id ,flag)
-    if (len(data) ,ty ,flag,stream_id,data) != rm_head(hdata) :
-        raise Exception(" head detail error  ")
-    if len_pack (hdata) != len(hdata) :
-        raise Exception(' len_pack  error ')
-    
+    def is_in_v(self,v):
+        return v in self.vmap
+
+    def del_k(self,k):
+        v = self.kmap[k]
+        del self.vmap[v]
+        del self.kmap[k]
+
+    def del_v(self,v):
+        k = self.vmap[v]
+        del self.kmap[k]
+        del self.vmap[v]
 

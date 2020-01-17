@@ -39,6 +39,8 @@ class Server :
         self.stream_manager = None 
         for psocket in self.proxy_sockets :
             psocket.close()
+        self.proxy_sockets = []
+        self.proxy_socket_map = {}
         return 
 
     def handle_auth(self,data):
@@ -122,8 +124,11 @@ class Server :
         return 
 
 
+
+
     def handle_receive(self,readable) :
         for s in readable :
+            logging.debug("# receive from sock={}".format(s))
             if s == self.server_socket :
                 data = s.recv(1024)
                 logging.debug(" receive data {}".format(data))
@@ -137,6 +142,9 @@ class Server :
                 conn,_= s.accept()
                 self.stream_manager.open_stream(0x1,self.proxy_socket_map[s],conn)
                 continue
+            if s.fileno() == -1 :
+                continue
+            logging.debug(" socket fileno = {}".format(s.fileno()))
             data = s.recv(1024)
             logging.debug(" receive data {}".format(data))
             stream_id = self.stream_manager.get_stream_id(s)
@@ -189,7 +197,7 @@ class Server :
 
     def start(self):
         s = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-        s.bind(('127.0.0.1',self.listen_port))
+        s.bind(('0.0.0.0',self.listen_port))
         self.listen_socket =s 
         s.listen(1)
         while True :
