@@ -9,13 +9,13 @@ class Stream():
         self.stream_id = stream_id
         self.sock=sock
         self.msg_queue = queue.Queue()
-        self.is_open = True
+        self.closed = False
 
 
     def recv_msg(self):
         data = self.sock.recv(1024)
         logging.debug(" recv data {}".format(data))
-        return 
+        return  data
 
     def put_msg(self,msg) :
         self.msg_queue.put(msg)
@@ -73,6 +73,8 @@ class StreamManager:
     def sock_to_stream(self,sock):
         return self.stream_sock_map.get_v(sock)
     
+    def stream_is_exist(self,stream_id):
+        return stream_id in self.stream_map
 
 
     # 打开一个流
@@ -88,6 +90,8 @@ class StreamManager:
         stream = Stream(stream_id,sock)
         self.stream_map[stream_id] =stream
         self.stream_sock_map.put(stream,sock)
+
+        self.inputs.append(sock)
         return 
 
     # 关闭一个流
@@ -100,25 +104,27 @@ class StreamManager:
 
         # 将流更改为close ,并加入到待销毁
         stream = self.stream_map[stream_id]
-        stream.is_open = False
-        self.to_destories.append(stream)
+        stream.closed = True
+        self.add_stream_destory(stream)
         return 
         
     # 处理关闭一个流
-    def hand_reset_stream(self,stream_id,code) :
+    def handle_reset_stream(self,stream_id,code) :
         if stream_id not in self.stream_map:
             logging.debug("to reset stream not exist stream_id={}".format(stream_id))
             return 
         logging.debug( "hand reset_stream stream_id={} code={}  ".format(stream_id,code))
         stream = self.stream_map[stream_id]
-        if  not stream.is_open:
+        if stream.closed:
             logging.debug(" stream had close stream_id={}".format(stream_id))
             return 
 
-        # 将流更改为close ,并加入到待销毁
+        # 将流更改为close
         stream = self.stream_map[stream_id]
-        stream.is_open = False
-        self.to_destories.append(stream)
+        stream.closed = True
+        # 流为空，关闭
+        if stream.is_empty():
+            self.add_stream_destory(stream)
         return 
 
     # socket 绑定流
@@ -127,11 +133,12 @@ class StreamManager:
         stream= Stream(stream_id,sock)
         self.stream_map[stream_id] =stream
         self.stream_sock_map.put(stream,sock)
+        self.inputs.append(sock)
         return
 
     def put_sock_msg(self,sock,msg):
-        stream = self.stream_sock_map.get_v[sock]
-        if  not stream.is_open :
+        stream = self.stream_sock_map.get_v(sock)
+        if stream.closed :
             logging.debug("to  put msg stream close ")
             return 
         stream.put_msg(msg)
@@ -139,39 +146,57 @@ class StreamManager:
             self.outputs.append(sock)
         return 
 
-    def hand_send(self,sock) :
-        stream = self.stream_sock_map.get_v[sock]
+    def handle_send(self,sock) :
+        stream = self.stream_sock_map.get_v(sock)
         stream.send_msg()
         if stream.is_empty():
             if sock in self.outputs :
                 self.outputs.remove(sock)
-            if not stream.is_open () :
-                self.to_destories.append(stream)
+            if stream.closed:
+                self.add_stream_destory(stream)
         return 
 
 
-    def hand_recv(self,sock):
-        stream = self.stream_sock_map.get_v[sock]
+    def handle_recv(self,sock):
+        stream = self.stream_sock_map.get_v(sock)
         data = stream.recv_msg()
         if data == b'': # 目标socket close
             self.reset_stream(stream.stream_id,0x0)
             return 
-        if not stream.is_open :
+        if stream.closed:
             return 
         msg = protocol.add_frame_head(protocol.FRAME_DATA,data,stream.stream_id)
         self.ssock_queue.put(msg)
         return 
 
+    def handle_exception(self,sock):
+        logging.debug('exception condition on' +  sock.getpeername())
+        stream = self.stream_sock_map.get_v(sock)
+        self.reset_stream(stream.stream_id,0x3)
+        self.add_stream_destory(stream)
+        return
+
+
+    def add_stream_destory(self,stream):
+        if stream not in self.to_destories :
+            self.to_destories.append(stream)
+        return
+
 
     #  获取需要监听的端口
     def select_socks(self):
-        return self.inputs,self.outputs
+        return self.inputs[:],self.outputs[:]
 
     def destroy_streams(self):
         for stream in self.to_destories:
+            if stream.sock in self.inputs:
+                self.inputs.remove(stream.sock)
+            if stream.sock in self.outputs:
+                self.outputs.remove(stream.sock)
             stream.destroy()
             del self.stream_map[stream.stream_id]
-            del self.stream_sock_map.del_k[stream]
+            self.stream_sock_map.del_k(stream)
+        self.to_destories=[]
         return 
 
     def destroy(self):
@@ -181,5 +206,3 @@ class StreamManager:
         self.stream_sock_map=None
         return 
 
-
-        

@@ -62,7 +62,7 @@ def parse_auth_data(data):
 
 def register_data(tports,uports):
     cdata = struct.pack('>2B',len(tports),len(uports))
-    pdata = bytes()
+    pdata = b''
     for  port in tports + uports:
         pdata += struct.pack('>2H',port[0],port[1])
     return cdata + pdata
@@ -124,8 +124,8 @@ if __name__ == "__main__" :
     err_code = 0x1
     if parse_auth_data(auth_data(maver,miver,uname,passwd)) != (maver,miver,uname,passwd) :
         raise Exception(' opt auth_data err')
-    tports= [(20,1020),(40,1040)]
-    uports = [(30,1030),(50,1050)]
+    tports= [(10022,11122)]
+    uports = []
     if parse_register_data(register_data(tports,uports)) != (tports,uports) :
         raise Exception(' opt register_data err ')
     if parse_terminate_data(terminate_data(maver,miver,err_code)) != (maver,miver,err_code) :
